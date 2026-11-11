@@ -1,7 +1,7 @@
 {
   "name": "blob-wars",
   "productName": "מלחמת הבלובים",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "מלחמת הבלובים — turn-based artillery game with online play, packaged as a Windows desktop app",
   "main": "main.js",
   "private": true,

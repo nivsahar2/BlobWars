@@ -333,21 +333,6 @@ function eih(ac,dst,t,base){const d=.3,E=VOW.e,I=VOW.i,amp=[1,.55,.22],Q=[5,8,10
 function ouch(b){
  if(S.snd&&!NET.ff&&AC&&AC.state==='running'){try{eih(AC,AC.destination,AC.currentTime,(b.team?250:310)*(.9+((b.ph*1000|0)%5)*.05))}catch(e){}}
  return 'איי!'}
-/* "Bye, bye!": two sung syllables, the second lower — a sing-song farewell. Each starts with the lips shut
-   (a soft hum through "m"-like formants), pops open into "a" (that pop is what makes it a "b"), then
-   glides to "i": the "ai" of "bye". Returns its length in seconds. */
-function byebye(ac,dst,t,base){const amp=[1,.55,.22],Q=[5,8,10],M=[280,1000,2300],out=ac.createGain();out.gain.value=.6;out.connect(dst);
- const one=(t0,pm,d)=>{const src=ac.createOscillator(),f0=base*pm;src.type='sawtooth';
-  src.frequency.setValueAtTime(f0*1.05,t0);src.frequency.linearRampToValueAtTime(f0*1.12,t0+d*.3);src.frequency.exponentialRampToValueAtTime(f0*.84,t0+d);
-  const env=ac.createGain();env.gain.setValueAtTime(0,t0);env.gain.linearRampToValueAtTime(.22,t0+.012);env.gain.setValueAtTime(.22,t0+.04);// lips shut: hum
-  env.gain.linearRampToValueAtTime(1,t0+.05);env.gain.setValueAtTime(1,t0+d*.6);env.gain.exponentialRampToValueAtTime(.001,t0+d);// pop → open vowel
-  for(let i=0;i<3;i++){const f=ac.createBiquadFilter();f.type='bandpass';f.Q.value=Q[i];
-   f.frequency.setValueAtTime(M[i],t0);f.frequency.setValueAtTime(M[i],t0+.04);f.frequency.linearRampToValueAtTime(VOW.a[i],t0+.07);
-   f.frequency.setValueAtTime(VOW.a[i],t0+d*.4);f.frequency.linearRampToValueAtTime(VOW.i[i],t0+d*.85);
-   const g=ac.createGain();g.gain.value=amp[i]*2.6;env.connect(f);f.connect(g);g.connect(out)}
-  src.connect(env);src.start(t0);src.stop(t0+d+.03)};
- one(t,1.25,.3);one(t+.38,1,.48);return .9}
-function sayBye(b){if(S.snd&&!NET.ff&&AC&&AC.state==='running'){try{byebye(AC,AC.destination,AC.currentTime,(b.team?250:310)*(.9+((b.ph*1000|0)%5)*.05))}catch(e){}}}
 /* "בומבה" chant: drum roll, then voices sing "בום-בה! בום-בה! בום-בום-בום-בההה!" */
 const FM={a:[800,1200,2600],o:[480,840,2400],m:[280,1000,2300]};
 function choir(ac,dst,t0){ac=ac||AC;dst=dst||ac.destination;t0=t0==null?ac.currentTime:t0;
@@ -1000,13 +985,13 @@ function allRest(){if(G.pending.length||G.fires.length||G.holes.length||G.quake>
  for(const p of G.projs)if(!(p.type==='mine'&&p.rest&&p.fuse==null))return false;
  for(const k of G.barrels)if(k.fuse>0||k.fall)return false;return true}
 /* Death. A blob at 0 hp doesn't just vanish: once everything has settled it raises a grenade in one little
-   hand, waves "Bye, Bye!", pulls the pin — and the grenade goes off in its hand (the same small blast as
-   before). b.bye counts the ticks of that farewell. It is simulation state, so allRest() waits for it and
-   online both PCs play it on the very same ticks. */
-const BYE=100,BYE_SAY=16,BYE_PIN=70;// ticks: the whole farewell (~1.7 s) · the "Bye, Bye!" · pin out, fuse fizzing
+   hand, waves (a silent "Bye, Bye!" speech bubble), pulls the pin — and the grenade goes off in its hand
+   (the same small blast as before). b.bye counts the ticks of that farewell. It is simulation state, so
+   allRest() waits for it and online both PCs play it on the very same ticks. */
+const BYE=100,BYE_SAY=16,BYE_PIN=70;// ticks: the whole farewell (~1.7 s) · the bubble appears · pin out, fuse fizzing
 function killDead(){let any=false;for(const b of allBlobs())if(b.alive&&b.hp<=0&&!b.bye){b.bye=1;b.drill=null;b.rope=null;b.jetOn=false;b.burnT=0;any=true}return any}
 function updBye(){for(const b of allBlobs()){if(!b.bye)continue;if(!b.alive){b.bye=0;continue}// drowned before the bang
-  const t=++b.bye;if(t===BYE_SAY)sayBye(b);else if(t>BYE_PIN&&t<BYE&&(t-BYE_PIN)%10===0)snd('tick');
+  const t=++b.bye;if(t>BYE_PIN&&t<BYE&&(t-BYE_PIN)%10===0)snd('tick');// the fuse ticks; no voice
   if(t>=BYE){b.bye=0;b.alive=false;G.graves.push({x:b.x,y:b.y,c:G.teams[b.team].color});explode(b.x+b.dir*11,b.y-18,26,18)}}}// where the hand holds it
 
 /* ---------- weapons ---------- */
@@ -1719,7 +1704,7 @@ resize();rotCheck();
 function backdrop(){newGame(true,4,true);G.state='over';G.active=null;G.banner=null;cam.z=clamp(vh/520,minZoom(),1);cam.x=W/2;cam.y=520;clampCam()}
 backdrop();
 window.__setDiff=v=>{S.diff=v};window.__voice=voice;window.__choir=choir;window.__OUCH=OUCH;window.__cry=cry;window.__CRIES=CRIES;window.__cryText=cryText;window.__solid=solid;window.__pause=()=>pauseGame();window.__dbg={get G(){return G},step,newGame,WEAPONS,fireDown,fireUp,useTarget,inp,cam,S,MAPS,explode,house,bunker,pipe,container,tree,temple,edge,
- get NET(){return NET},NI,killDead,byebye,netFake,netMsg,netStart,netReset,stateHash,act,runCmd,seedRng,rand,mine,BUILD};
+ get NET(){return NET},NI,killDead,netFake,netMsg,netStart,netReset,stateHash,act,runCmd,seedRng,rand,mine,BUILD};
 requestAnimationFrame(frame);
 </script>
 
