@@ -30,10 +30,11 @@ const [out] = await packager({
     InternalName: 'BlobWars',
     CompanyName: 'Blob Wars',
   },
-  // Ship only what the app needs at runtime: main.js, app/, build/icon.ico, package.json.
+  // Ship only what the app needs at runtime: main.js, app/ (with app/vendor), build/icon.ico, package.json.
   // node_modules is excluded outright: the app has no runtime dependencies, and prune was leaving
-  // the packager's own dev tooling inside app.asar.
-  ignore: [/^\/node_modules($|\/)/, /^\/dist($|\/)/, /^\/scripts($|\/)/, /^\/build\/icon\.png$/, /^\/\.claude($|\/)/, /\.md$/],
+  // the packager's own dev tooling inside app.asar. release/ holds the shareable zip of a previous
+  // build — it must never end up inside the next one. Git metadata isn't needed at runtime either.
+  ignore: [/^\/node_modules($|\/)/, /^\/dist($|\/)/, /^\/release($|\/)/, /^\/scripts($|\/)/, /^\/build\/icon\.png$/, /^\/\.claude($|\/)/, /^\/\.git/, /\.md$/],
 });
 
 console.log(`packaged → ${out}`);

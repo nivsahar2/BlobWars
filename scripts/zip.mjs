@@ -6,7 +6,7 @@
  * Git-for-Windows `tar` that may come first on PATH is GNU tar and cannot, hence the full path.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -22,6 +22,15 @@ if (!existsSync(path.join(dist, src, 'BlobWars.exe'))) throw new Error(`Run "npm
 mkdirSync(outDir, { recursive: true });
 rmSync(out, { force: true });
 
-// -a picks the format from the .zip extension; -s renames the top folder to a friendlier "BlobWars"
-execFileSync(tar, ['-a', '-c', '-f', out, '-s', `,^${src},BlobWars,`, '-C', dist, src], { stdio: 'inherit' });
+// The folder inside the zip should be a friendly "BlobWars". Windows' bsdtar has no -s to rename entries,
+// so rename the packaged folder for the moment of zipping (instant, unlike copying 250 MB) and always put it back.
+const top = 'BlobWars';
+if (existsSync(path.join(dist, top))) throw new Error(`dist/${top} already exists — remove it and retry`);
+renameSync(path.join(dist, src), path.join(dist, top));
+try {
+  // -a picks the format from the .zip extension
+  execFileSync(tar, ['-a', '-c', '-f', out, '-C', dist, top], { stdio: 'inherit' });
+} finally {
+  renameSync(path.join(dist, top), path.join(dist, src));
+}
 console.log(`zipped → ${out} (${(statSync(out).size / 1048576).toFixed(1)} MB)`);
