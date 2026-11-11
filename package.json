@@ -1,19 +1,23 @@
 {
   "name": "blob-wars",
   "productName": "מלחמת הבלובים",
-  "version": "1.0.0",
-  "description": "מלחמת הבלובים — turn-based artillery game, packaged as a Windows desktop app",
+  "version": "1.1.0",
+  "description": "מלחמת הבלובים — turn-based artillery game with online play, packaged as a Windows desktop app",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "icon": "electron scripts/make-icon.js",
+    "vendor": "node -e \"require('fs').copyFileSync('node_modules/peerjs/dist/peerjs.min.js','app/vendor/peerjs.min.js')\"",
     "package": "node scripts/package.mjs",
+    "zip": "node scripts/zip.mjs",
+    "dist": "npm run package && npm run zip",
     "install-app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1",
     "build": "npm run icon && npm run package && npm run install-app"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "electron": "^45.2.3"
+    "electron": "^45.2.3",
+    "peerjs": "1.5.5"
   }
 }

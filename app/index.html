@@ -65,6 +65,22 @@ kbd{display:inline-block;min-width:18px;padding:0 4px;margin:0 1px;border:1.5px 
 .seg[data-k="n"],.seg[data-k="theme"]{gap:3px;flex-wrap:nowrap}
 .seg[data-k="n"] button{min-width:25px;padding:0 4px}.seg[data-k="theme"] button{padding:0 4px}
 #mapinfo{font-size:12px;font-weight:700;opacity:.8;text-align:right;margin:-2px 0 6px;min-height:16px}
+/* online play: the box under the play buttons walks through create/join → waiting → connected */
+.big.net{background:#c9b6ff}
+#netbox{margin-top:10px;padding:8px 10px 10px;border:2px dashed #1d2b4f;border-radius:14px;background:#fffdf4}
+.joinrow{display:flex;gap:8px;margin-top:8px}
+.joinrow .big{margin:0;width:auto;flex:0 0 auto;padding:11px 18px}
+#netCode{flex:1;min-width:0;border:3px solid #1d2b4f;border-radius:14px;font:900 22px system-ui;text-align:center;letter-spacing:4px;color:#1d2b4f;background:#fff;direction:ltr;-webkit-user-select:text;user-select:text}
+#netCode::placeholder{font-size:15px;letter-spacing:0;font-weight:700;opacity:.5}
+#netCodeBox{font:800 14px system-ui;margin:2px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+#netCodeV{font:900 30px/1.15 Consolas,ui-monospace,monospace;letter-spacing:5px;background:#1d2b4f;color:#ffd640;border-radius:10px;padding:2px 12px;direction:ltr;-webkit-user-select:text;user-select:text}
+#bCopy{height:34px;padding:0 12px;border-radius:10px;border:2px solid #1d2b4f;background:#fff;font:800 13px system-ui;color:#1d2b4f}
+#netSt{font:700 13px/1.5 system-ui;min-height:18px;margin-top:4px}
+#netSt.err{color:#c62828}
+.lnk{background:none;border:0;padding:4px;margin-top:6px;font:700 12px system-ui;color:#1d2b4f;text-decoration:underline;opacity:.75}
+/* rules come from the host: a connected guest (and both players during a match) can only change sound */
+body.netlock .seg:not([data-k="snd"]),body.netlock #mapinfo{opacity:.45;pointer-events:none}
+body.netc #playBtns,body.netc #bNet{display:none!important}
 </style>
 <canvas id="c"></canvas>
 <div id="ui" class="hide">
@@ -106,9 +122,23 @@ kbd{display:inline-block;min-width:18px;padding:0 4px;margin:0 1px;border:1.5px 
   <div class="row"><span>מים עולים</span><div class="seg" data-k="sd"><button data-v="1">פועל</button><button data-v="0">כבוי</button></div></div>
   <div class="row"><span>צלילים</span><div class="seg" data-k="snd"><button data-v="1">פועל</button><button data-v="0">כבוי</button></div></div>
   </div>
-  <div class="btns">
+  <div class="btns" id="playBtns">
   <button class="big" id="b1p">שחקן נגד המחשב</button>
   <button class="big alt" id="b2p">שני שחקנים</button>
+  </div>
+  <button class="big net" id="bNet">🌐 משחק ברשת עם חבר</button>
+  <div id="netbox" class="hide">
+   <div id="netA">
+    <button class="big" id="bHost">צור חדר חדש</button>
+    <div class="joinrow"><input id="netCode" maxlength="5" placeholder="קוד חדר מחבר" autocomplete="off" spellcheck="false" aria-label="קוד חדר"><button class="big alt" id="bJoin">הצטרף</button></div>
+    <button class="lnk" id="bNetX">חזרה</button>
+   </div>
+   <div id="netB" class="hide">
+    <div id="netCodeBox">קוד החדר: <span id="netCodeV"></span><button id="bCopy">העתק</button></div>
+    <button class="big go hide" id="bNetGo">▶ התחל משחק ברשת</button>
+    <button class="big red" id="bNetOff">ביטול</button>
+   </div>
+   <div id="netSt" role="status" aria-live="polite"></div>
   </div>
   <div class="rec" id="rec"></div>
   <details id="kbhelp" open><summary>שליטה במקלדת ובעכבר</summary>
@@ -145,6 +175,8 @@ kbd{display:inline-block;min-width:18px;padding:0 4px;margin:0 1px;border:1.5px 
   🛢️ חביות נפץ מתפוצצות מפיצוץ, מאש או מירייה (החביות הירוקות מרעילות). 💰 תיבת אוצר נותנת שני נשקים מיוחדים ושורדת פיצוצים.
   </details>
 </div></div>
+<!-- PeerJS 1.5.5 (MIT), vendored from node_modules/peerjs/dist — `npm run vendor` refreshes it. Online play only. -->
+<script src="vendor/peerjs.min.js"></script>
 <script>
 'use strict';
 const W=2400,H=1000,GR=0.22,TAU=Math.PI*2;
@@ -154,12 +186,30 @@ let vw=0,vh=0,dpr=1,G=null,paused=true,inGame=false;
 const terr=document.createElement('canvas');terr.width=W;terr.height=H;
 const tctx=terr.getContext('2d');
 const solid=new Uint8Array(W*H);
-const rnd=(a=1,b)=>b===undefined?Math.random()*a:a+Math.random()*(b-a);
+/* Randomness. Everything that shapes the match (terrain, spawns, wind, crates, explosion debris, the AI)
+   draws from ONE seeded generator, so two PCs given the same seed and the same inputs play out the exact
+   same game — online play is built on that. Purely cosmetic randomness (camera shake, the drifting
+   clouds, a rocket's flame flicker, audio noise) uses vrnd/Math.random instead: the renderer runs a
+   different number of times on a 60 Hz and a 144 Hz screen, so it must never advance the shared one. */
+let rs=0;
+function seedRng(s){rs=s>>>0}
+// mulberry32: pure 32-bit integer math, so it yields the identical sequence on every machine
+function rand(){let t=rs=rs+0x6D2B79F5|0;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}
+seedRng(Math.random()*4294967296);// offline games still differ every time
+const rnd=(a=1,b)=>b===undefined?rand()*a:a+rand()*(b-a);
+const vrnd=(a=1,b)=>b===undefined?Math.random()*a:a+Math.random()*(b-a);// cosmetic only — see above
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 const cam={x:W/2,y:500,z:1};let userPanT=0;
 const S={diff:1,n:4,tt:45,snd:1,theme:0,map:0,hp:100,aim:0,sd:1,wins:[0,0,0]};
 try{Object.assign(S,JSON.parse(localStorage.getItem('blobwars')||'{}'))}catch(e){}
-function saveS(){try{localStorage.setItem('blobwars',JSON.stringify(S))}catch(e){}}
+// Online session state (the protocol lives under "online play" below). Declared this early because
+// saveS() and genTerrain() consult it. While a guest is connected, S holds the HOST's rules for display
+// and play; ownS keeps the guest's own settings so they are what gets saved, and come back afterwards.
+const NET={on:false,role:null,ready:false,open:false,me:0,peer:null,conn:null,code:'',st:'',err:'',mid:0,round:0,
+ q:[],inq:new Map(),upTo:0,prod:0,sent:0,acc:0,tRun:0,out:[],outH:[],theirH:new Map(),wait:false,ff:false,
+ mask:null,pend:null,ownS:null,lastRx:0,lastAdv:0,lastRaf:0,rtt:0,desync:0,tmo:0,jt:0};
+const NI={};// online: the replicated key state that control() reads instead of the local keyboard
+function saveS(){try{localStorage.setItem('blobwars',JSON.stringify(NET.ownS?Object.assign(NET.ownS,{snd:S.snd}):S))}catch(e){}}
 const NAMES=[['בומבי','פיצי','זיגי','טופי','ג׳ינג׳י','שוקו','מיצי','גומי'],['בלו','קפיץ','נודי','צ׳יפס','רעמי','פופו','זוזו','טיקי']];// up to 8 per team
 const WEAPONS=[
  {id:'bazooka',name:'בזוקה',icon:'🚀',charge:1,desc:'טיל שמתפוצץ בפגיעה ומשאיר קצת אש. מושפע מהרוח'},
@@ -281,7 +331,7 @@ function eih(ac,dst,t,base){const d=.3,E=VOW.e,I=VOW.i,amp=[1,.55,.22],Q=[5,8,10
 // Called once per fire touch (burn() gives each blob a 45-tick cooldown, so one touch = one call).
 // No global throttle: two blobs catching fire together each say their own "eih!".
 function ouch(b){
- if(S.snd&&AC&&AC.state==='running'){try{eih(AC,AC.destination,AC.currentTime,(b.team?250:310)*(.9+((b.ph*1000|0)%5)*.05))}catch(e){}}
+ if(S.snd&&!NET.ff&&AC&&AC.state==='running'){try{eih(AC,AC.destination,AC.currentTime,(b.team?250:310)*(.9+((b.ph*1000|0)%5)*.05))}catch(e){}}
  return 'איי!'}
 /* "בומבה" chant: drum roll, then voices sing "בום-בה! בום-בה! בום-בום-בום-בההה!" */
 const FM={a:[800,1200,2600],o:[480,840,2400],m:[280,1000,2300]};
@@ -307,7 +357,8 @@ function choir(ac,dst,t0){ac=ac||AC;dst=dst||ac.destination;t0=t0==null?ac.curre
  const pad=ac.createGain();pad.gain.setValueAtTime(0,t0+v0+1.98);pad.gain.linearRampToValueAtTime(.35,t0+v0+2.1);pad.gain.setValueAtTime(.35,end-.3);pad.gain.linearRampToValueAtTime(0,end);F.forEach(f=>pad.connect(f));
  for(const n of[57,61,64,69])for(const det of[-8,8]){const o=ac.createOscillator();o.type='sawtooth';o.frequency.value=N(n);o.detune.value=det;o.connect(pad);o.start(t0+v0+1.98);o.stop(end+.05)}
  return end-t0}
-function snd(k,a){if(!S.snd||!AC||AC.state!=='running')return;if(k==='bomba'){try{choir(AC,AC.destination,AC.currentTime)}catch(e){}return}try{const t=AC.currentTime,g=AC.createGain();g.connect(AC.destination);
+// NET.ff: an online match is fast-forwarding to catch up — stay quiet rather than fire every sound at once
+function snd(k,a){if(!S.snd||NET.ff||!AC||AC.state!=='running')return;if(k==='bomba'){try{choir(AC,AC.destination,AC.currentTime)}catch(e){}return}try{const t=AC.currentTime,g=AC.createGain();g.connect(AC.destination);
  if(k==='boom'||k==='splash'){const boom=k==='boom',s=AC.createBufferSource();s.buffer=noiseBuf;const f=AC.createBiquadFilter();f.type=boom?'lowpass':'highpass';f.frequency.setValueAtTime(boom?900:1500,t);if(boom)f.frequency.exponentialRampToValueAtTime(60,t+.5);g.gain.setValueAtTime(boom?Math.min(1,(a||40)/45):.2,t);g.gain.exponentialRampToValueAtTime(.001,t+(boom?.7:.35));s.connect(f);f.connect(g);s.start(t);s.stop(t+.8);return}
  const P=SP[k];if(!P)return;const o=AC.createOscillator();o.type=P[0];o.frequency.setValueAtTime(P[1],t);o.frequency.exponentialRampToValueAtTime(P[2],t+P[3]);g.gain.setValueAtTime(P[4],t);g.gain.exponentialRampToValueAtTime(.001,t+P[3]);o.connect(g);o.start(t);o.stop(t+P[3]+.02)}catch(e){}}
 
@@ -332,7 +383,7 @@ const[gC,gc]=mkCv(1),[bC,bc]=mkCv(0),[hC,hc]=mkCv(0),[bgC,bgx]=mkCv(0);
 const HARDM={steel:1,granite:1};
 const edge=(x,y,m=260)=>{let e=Math.min(1,x/m,(W-x)/m);e=e*e*(3-2*e);return H+40-(H+40-y)*e};// land sinks into the sea at both ends
 const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
-const anyOf=a=>a[rnd(a.length)|0],chance=p=>Math.random()<p;
+const anyOf=a=>a[rnd(a.length)|0],chance=p=>rand()<p;
 const CC=['#b8392b','#2e6fb7','#2f9e57','#d9821e','#7b4fb5'];// shipping-container paint
 function pathP(g,p){g.beginPath();g.moveTo(p[0][0],p[0][1]);for(let i=1;i<p.length;i++)g.lineTo(p[i][0],p[i][1]);g.closePath()}
 function tile(w,h,f){const p=document.createElement('canvas');p.width=w;p.height=h;f(p.getContext('2d'));return gc.createPattern(p,'repeat')}
@@ -419,7 +470,7 @@ function house(K,x,gy,w,fl,o={}){const t=o.t||10,fh=o.fh||64,s=8,m=o.mat||'brick
   K.cutB(g=>pathP(g,[[x+t+8,top],[x+w/2,top-rh+20],[x+w-t-8,top]]),o.inner||m,.62)}// hollow attic, reached through the top hatch
  else if(o.roof==='crenel'){const n=Math.max(1,Math.round((w-14)/26));for(let i=0;i<=n;i++)K.blk(m,x+(w-14)*i/n,top-14,14,14)}
  else if(o.roof!=='none'){K.blk(m,x,top-10,8,10);K.blk(m,x+w-8,top-10,8,10)}
- if(o.items!==false)for(let k=0;k<fl;k++){const r=Math.random(),ix=x+t+rnd(14,w-2*t-14);if(r<.32)K.crate(ix,F(k)-14);else if(r<.46)K.barrel(ix,F(k)-14)}
+ if(o.items!==false)for(let k=0;k<fl;k++){const r=rand(),ix=x+t+rnd(14,w-2*t-14);if(r<.32)K.crate(ix,F(k)-14);else if(r<.46)K.barrel(ix,F(k)-14)}
  return{x,w,gy,top,fl,fh,F}}
 // steel pillbox: hard roof and walls, a doorway on one side (dside 0 = left) and a firing slit on the other
 function bunker(K,x,gy,w,h=50,dside=0,bags=1){const T=10,dl=!dside;
@@ -751,6 +802,9 @@ function genTerrain(){
  // solid mask from all three solid layers; hard wins
  const bd=bc.getImageData(0,0,W,H).data,hd=hc.getImageData(0,0,W,H).data;let hard=0;
  for(let i=0,n=W*H;i<n;i++){const a=i*4+3;if(hd[a]>128){solid[i]=2;hard=1}else solid[i]=d[a]>128||bd[a]>128?1:0}
+ // Online guest: the host's mask wins. Both PCs painted the same arena from the same seed, but canvas
+ // anti-aliasing can differ between GPUs by an edge pixel, and the physics must agree on every pixel.
+ if(NET.mask){solid.set(NET.mask);hard=solid.includes(2)?1:0}
  G.hard=hard;G.items0=K.items;
  tctx.globalCompositeOperation='source-over';tctx.clearRect(0,0,W,H);tctx.drawImage(gC,0,0);tctx.drawImage(bC,0,0);tctx.drawImage(hC,0,0)}
 function carve(x,y,r,sc=true){
@@ -811,14 +865,15 @@ function nextTurn(){
  if(!pick){pick=t.blobs.find(o=>o.alive);t.cur=t.blobs.indexOf(pick)}
  G.active=t.blobs[t.cur];G.state='aim';G.timer=S.tt*60;G.wind=rnd(-1,1);G.charging=false;G.power=0;G.target=null;G.shots=2;G.lock=false;G.turnN++;G.settleT=0;G.focus=90;
  if(!hasAmmo(curW()))t.wi=0;
- if(G.turnN>2&&Math.random()<.4){const x=rnd(200,W-200);G.crates.push({x,y:-20,kind:Math.random()<.55?'wep':'hp'})}
+ if(G.turnN>2&&rand()<.4){const x=rnd(200,W-200);G.crates.push({x,y:-20,kind:rand()<.55?'wep':'hp'})}
  // sudden death once every blob has had ~3 turns: turn 24 with 4 a side (as before), later with bigger teams
  if(S.sd&&G.turnN>Math.max(24,6*G.teams[0].blobs.length)){G.waterT-=22;banner('מוות פתאומי — המים עולים!')}else banner('התור של '+G.active.name+' ('+t.name+')');
- userPanT=0;inp.jumpP=inp.flipP=false;uiSync();if(t.ai)aiBegin()}
+ userPanT=0;inp.jumpP=inp.flipP=false;for(const k in NI)NI[k]=false;uiSync();if(t.ai)aiBegin()}
 function gameOver(){inGame=false;let m=G.winner?G.winner.name+' ניצחו! 🏆':'תיקו!';
- if(G.vsAI){if(G.winner===G.teams[0]){S.wins[S.diff]=(S.wins[S.diff]||0)+1;saveS();m='ניצחת את המחשב ברמה '+DN[S.diff]+'! 🏆'}else m='המחשב ניצח הפעם. נסה שוב!';recSync()}
+ if(NET.on){NET.on=false;m=!G.winner?'תיקו!':G.winner===G.teams[NET.me]?'ניצחת את החבר! 🏆':'החבר ניצח הפעם — נסה שוב!';if(NET.role!=='guest')document.body.classList.remove('netlock')}
+ else if(G.vsAI){if(G.winner===G.teams[0]){S.wins[S.diff]=(S.wins[S.diff]||0)+1;saveS();m='ניצחת את המחשב ברמה '+DN[S.diff]+'! 🏆'}else m='המחשב ניצח הפעם. נסה שוב!';recSync()}
  $('msg').textContent=m;$('bQuit').classList.add('hide');$('msg').classList.remove('hide');$('bResume').classList.add('hide');
- setTimeout(()=>{if(!inGame){$('menu').classList.remove('hide');$('ui').classList.add('hide')}},1400)}
+ setTimeout(()=>{if(!inGame){$('menu').classList.remove('hide');$('ui').classList.add('hide');netUI()}},1400)}
 
 /* ---------- physics ---------- */
 function hurt(b,d,quiet){if(d<=0||!b.alive)return;if(b.shield>G.turnN)d=Math.ceil(d/2);b.hp=Math.max(0,b.hp-d);if(!quiet){G.texts.push({x:b.x,y:b.y-26,t:'-'+d,c:b.shield>G.turnN?'#9fe6ff':'#fff',n:70});snd('hurt')}
@@ -903,7 +958,7 @@ function updBoomer(p){p.age++;const k=-p.spin*.03,c=Math.cos(k),sn=Math.sin(k),v
  return p.age<300&&p.x>-200&&p.x<W+200&&p.y<G.waterY}
 function updProj(p){const T=PT[p.type];if(p.type==='boomerang')return updBoomer(p);
  if(p.fuse!=null&&p.fuse>0&&--p.fuse<=0){if(p.type==='bomba'&&!p.sang){p.sang=1;p.fuse=205;p.vx=p.vy=0;p.rest=isSolid(p.x,p.y+3);p.float=!p.rest;snd('bomba');banner('בומבה!');return true}if(p.type==='bomba')G.flash=22;detonate(p);return false}
- if(p.sang){const k=1-p.fuse/205;G.shake=Math.max(G.shake,k*3);if(G.tick%2===0)for(let i=0;i<1+k*3;i++)G.parts.push({x:p.x+rnd(-3,3),y:p.y-12-k*8,vx:rnd(-1.8,1.8),vy:rnd(-3,-.8),n:20,m:20,c:Math.random()<.5?'#ffd640':'#ff4f9a',s:2,g:.5});if(p.float)return true}
+ if(p.sang){const k=1-p.fuse/205;G.shake=Math.max(G.shake,k*3);if(G.tick%2===0)for(let i=0;i<1+k*3;i++)G.parts.push({x:p.x+rnd(-3,3),y:p.y-12-k*8,vx:rnd(-1.8,1.8),vy:rnd(-3,-.8),n:20,m:20,c:rand()<.5?'#ffd640':'#ff4f9a',s:2,g:.5});if(p.float)return true}
  if(p.type==='mine'&&p.fuse==null){if(p.arm>0)p.arm--;else for(const b of allBlobs())if(b.alive&&Math.hypot(b.x-p.x,b.y-p.y)<30){p.fuse=55;snd('beep');break}}
  if(p.rest){if(isSolid(p.x,p.y+3))return true;p.rest=false}
  p.vy+=GR;if(T.wind)p.vx+=G.wind*.045*T.wind;p.age++;
@@ -998,7 +1053,7 @@ function girderAng(){return-G.active.dir*Math.round(G.aim/(Math.PI/8))*(Math.PI/
 
 /* ---------- control ---------- */
 const inp={};
-function control(b){if(!b||!b.alive)return;const c=curTeam().ai?AI.inp:inp;
+function control(b){if(!b||!b.alive)return;const c=curTeam().ai?AI.inp:NET.on?NI:inp;// online: the keys that arrived for this tick
  if(b.drill){c.jumpP=c.flipP=false;return}
  if(b.rope){const r=b.rope;if(c.left){b.vx-=.12;b.dir=-1}if(c.right){b.vx+=.12;b.dir=1}
   if(c.up)r.len=Math.max(18,r.len-2.4);if(c.down)r.len=Math.min(420,r.len+2.4);
@@ -1052,8 +1107,8 @@ function aiPlan(b,noWalk){const foes=[],friends=[b],others=[];for(const o of all
  if(D().smart&&t.ammo.homing>0){const f=foes.slice().sort((p,q)=>p.hp-q.hp)[0];if(f&&!hitB(b.x,b.y-60))return{kind:'homing',w:'homing',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:1.15,power:.55}}
  const near=foes.slice().sort((p,q)=>Math.abs(p.x-b.x)-Math.abs(q.x-b.x))[0];
  if(!near)return{kind:'inst',w:'skip',dir:b.dir,angle:G.aim};
- if(S.diff>0&&t.ammo.lightning>0&&Math.random()<.6){const f=foes.slice().sort((p,q)=>p.hp-q.hp)[0];return{kind:'tap',w:'lightning',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:G.aim}}
- if(S.diff>0&&t.ammo.meteor>0&&Math.random()<.5){const f=foes[rnd(foes.length)|0];return{kind:'tap',w:'meteor',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:G.aim}}
+ if(S.diff>0&&t.ammo.lightning>0&&rand()<.6){const f=foes.slice().sort((p,q)=>p.hp-q.hp)[0];return{kind:'tap',w:'lightning',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:G.aim}}
+ if(S.diff>0&&t.ammo.meteor>0&&rand()<.5){const f=foes[rnd(foes.length)|0];return{kind:'tap',w:'meteor',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:G.aim}}
  if(t.ammo.airstrike>0&&S.diff>0){const f=foes[rnd(foes.length)|0];return{kind:'tap',w:'airstrike',x:f.x,y:f.y,dir:f.x<b.x?-1:1,angle:G.aim}}
  if(!noWalk)return{walk:100,dir:near.x<b.x?-1:1};
  const dx=Math.abs(near.x-b.x),v=Math.sqrt(dx*GR/Math.sin(1.7));
@@ -1063,7 +1118,9 @@ function aiPlan(b,noWalk){const foes=[],friends=[b],others=[];for(const o of all
 function step(){
  G.tick++;const b=G.active;
  if(G.state==='aim'||G.state==='retreat'){
-  if(curTeam().ai)aiStep();else if(aimSrc==='mouse')mouseAim();// re-aimed every tick so the aim tracks the cursor while the camera moves
+  // re-aimed every tick so the aim tracks the cursor while the camera moves (online, the cursor of the
+  // player whose turn it is arrives as an 'm' command instead: netSample() reads it before the tick)
+  if(curTeam().ai)aiStep();else if(aimSrc==='mouse'&&!NET.on)mouseAim();
   control(b);
   if(G.state==='aim'){if(--G.timer<=0)endControl();else if(G.timer<=300&&G.timer%60===0)snd('tick')}
   else if(G.state==='retreat'&&--G.retreatT<=0)endControl()}
@@ -1081,7 +1138,7 @@ function step(){
   const nx=f.x+f.vx,ny=f.y+f.vy;if(isSolid(nx,ny)){f.vx*=-.3;if(isSolid(f.x,ny))f.vy=0}else{f.x=nx;f.y=ny}
   for(const b of allBlobs())if(b.alive&&!(b.burnT>0)&&Math.abs(b.x-f.x)<12&&Math.abs(b.y-f.y)<14)burn(b,f);
   if(G.tick%40===0&&isSolid(f.x,f.y+3))carve(f.x,f.y+2,4,false);
-  if(G.tick%3===0)G.parts.push({x:f.x+rnd(-2,2),y:f.y-2,vx:rnd(-.3,.3),vy:rnd(-1.2,-.4),n:16,m:16,c:Math.random()<.5?'#ffb13b':'#ff5a2b',s:rnd(2,3.5),g:0});
+  if(G.tick%3===0)G.parts.push({x:f.x+rnd(-2,2),y:f.y-2,vx:rnd(-.3,.3),vy:rnd(-1.2,-.4),n:16,m:16,c:rand()<.5?'#ffb13b':'#ff5a2b',s:rnd(2,3.5),g:0});
   if(f.y>G.waterY)f.n=0}
  G.fires=G.fires.filter(f=>f.n>0);
  // black holes
@@ -1122,7 +1179,7 @@ function camUpdate(){
  if(t){const k=t===G.active?.12:.08;cam.x+=(t.x-cam.x)*k;cam.y+=(clamp(t.y,-300,H)-30/cam.z-cam.y)*k}clampCam()}
 
 /* ---------- render ---------- */
-const clouds=[];for(let i=0;i<9;i++)clouds.push({x:rnd(2400),y:rnd(20,170),s:rnd(.6,1.4)});
+const clouds=[];for(let i=0;i<9;i++)clouds.push({x:vrnd(2400),y:vrnd(20,170),s:vrnd(.6,1.4)});
 function resize(){dpr=Math.min(2,window.devicePixelRatio||1);vw=window.innerWidth;vh=window.innerHeight;cv.width=Math.round(vw*dpr);cv.height=Math.round(vh*dpr);cam.z=clamp(cam.z,minZoom(),3);clampCam()}
 function hills(col,par,by,amp){ctx.fillStyle=col;ctx.beginPath();ctx.moveTo(0,vh);const o=cam.x*par;for(let x=0;x<=vw+16;x+=16)ctx.lineTo(x,by+Math.sin((x+o)*.006)*amp+Math.sin((x+o)*.017+2)*amp*.4);ctx.lineTo(vw,vh);ctx.fill()}
 function label(t,x,y,col,f){ctx.font=f;ctx.lineWidth=3;ctx.strokeStyle='rgba(10,16,34,.85)';ctx.strokeText(t,x,y);ctx.fillStyle=col;ctx.fillText(t,x,y)}
@@ -1179,7 +1236,7 @@ function drawProj(p){ctx.save();ctx.translate(p.x,p.y);
   ctx.strokeStyle='#3d1666';ctx.lineWidth=1;for(const[gx,gy]of[[-3,-2],[3,-2],[0,-3.5],[-1.6,1.4],[1.6,1.4],[0,4]]){ctx.fillStyle='#7b3fb5';ctx.beginPath();ctx.arc(gx,gy,2.8,0,TAU);ctx.fill();ctx.stroke()}
   ctx.fillStyle='rgba(255,255,255,.5)';ctx.beginPath();ctx.arc(-3.8,-2.8,.9,0,TAU);ctx.fill();ctx.fillStyle='#3f8a2e';ctx.beginPath();ctx.ellipse(2.5,-6.8,3.2,1.6,-.5,0,TAU);ctx.fill();ctx.fillRect(-.5,-8,1.2,3)}
  else if(p.type==='heavy'){ctx.rotate(Math.atan2(p.vy,p.vx));// fat dark-red missile with fins and a flickering flame
-  ctx.fillStyle=G.tick%4<2?'#ffd640':'#ff8a2b';ctx.beginPath();ctx.moveTo(-9,-2.5);ctx.lineTo(-16-rnd(5),0);ctx.lineTo(-9,2.5);ctx.fill();
+  ctx.fillStyle=G.tick%4<2?'#ffd640':'#ff8a2b';ctx.beginPath();ctx.moveTo(-9,-2.5);ctx.lineTo(-16-vrnd(5),0);ctx.lineTo(-9,2.5);ctx.fill();
   ctx.fillStyle='#2b2f38';ctx.beginPath();ctx.moveTo(-5,-3);ctx.lineTo(-11,-8);ctx.lineTo(-8,0);ctx.lineTo(-11,8);ctx.lineTo(-5,3);ctx.fill();
   ctx.fillStyle='#7a1d1d';ctx.strokeStyle='#2b0d0d';ctx.lineWidth=1;ctx.beginPath();ctx.ellipse(0,0,10,4.4,0,0,TAU);ctx.fill();ctx.stroke();
   ctx.fillStyle='#ffd640';ctx.fillRect(-2,-4.2,3,8.4);ctx.fillStyle='rgba(255,255,255,.35)';ctx.fillRect(-6,-3,10,1.4)}
@@ -1195,7 +1252,7 @@ function render(){
  if(TH.night){ctx.fillStyle='#fff';for(const st of stars){ctx.globalAlpha=.5+.5*Math.sin(G.tick*.03+st.x*40);ctx.fillRect(st.x*vw,st.y*vh,st.s,st.s)}ctx.globalAlpha=1;ctx.fillStyle='#f4f1d0';ctx.beginPath();ctx.arc(vw*.66,vh*.2,20,0,TAU);ctx.fill()}
  ctx.fillStyle=TH.cloud;for(const c of clouds){c.x+=G.wind*.15+.05;const x=((c.x-cam.x*.15)%(vw+300)+vw+300)%(vw+300)-150,y=c.y-(cam.y-400)*.06;ctx.beginPath();ctx.arc(x,y,18*c.s,0,TAU);ctx.arc(x+22*c.s,y+4,14*c.s,0,TAU);ctx.arc(x-22*c.s,y+5,13*c.s,0,TAU);ctx.fill()}
  const hy=vh*.62-(cam.y-450)*.12;hills(TH.hills[0],.12,hy,34);hills(TH.hills[1],.22,hy+34,26);
- const z=cam.z;ctx.save();ctx.translate(vw/2+(G.shake>.3?rnd(-G.shake,G.shake):0),vh/2+(G.shake>.3?rnd(-G.shake,G.shake):0));ctx.scale(z,z);ctx.translate(-cam.x,-cam.y);
+ const z=cam.z;ctx.save();ctx.translate(vw/2+(G.shake>.3?vrnd(-G.shake,G.shake):0),vh/2+(G.shake>.3?vrnd(-G.shake,G.shake):0));ctx.scale(z,z);ctx.translate(-cam.x,-cam.y);
  const vx0=cam.x-vw/2/z,vy0=cam.y-vh/2/z,vyb=vy0+vh/z+20;
  water(G.waterY-6,1.5,TH.water[0],vyb);
  const sx=clamp(Math.floor(vx0)-16,0,W),sy=clamp(Math.floor(vy0)-16,0,H),sw=Math.min(W-sx,Math.ceil(vw/z)+32),sh=Math.min(H-sy,Math.ceil(vh/z)+32);
@@ -1229,9 +1286,9 @@ function render(){
    ctx.setLineDash([5,4]);ctx.strokeStyle='rgba(255,214,64,.95)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(a.x+ddx*L,a.y+ddy*L);ctx.stroke();ctx.setLineDash([]);
    ctx.fillStyle='#ffd640';ctx.beginPath();ctx.arc(a.x+ddx*L,a.y+ddy*L,3.5,0,TAU);ctx.fill();ctx.textAlign='center';label(Math.round(L/10)+' מ׳',a.x+ddx*L+(w.id==='jackhammer'?18:0),a.y+ddy*L-8,'#ffd640','800 10px system-ui,sans-serif')}
   // with a mouse the girder ghost sits under the cursor (faded when out of the 320px build range)
-  if(w.id==='girder'){let gx=a.x,gy=a.y-64;if(desk&&mouse.in&&!curTeam().ai){const p=toWorld(mouse.x,mouse.y);gx=p.x;gy=p.y}
+  if(w.id==='girder'){let gx=a.x,gy=a.y-64;if(desk&&mouse.in&&human()){const p=toWorld(mouse.x,mouse.y);gx=p.x;gy=p.y}
    ctx.globalAlpha=Math.hypot(gx-a.x,gy-a.y)>320?.22:.55;girderPath(ctx,gx,gy,girderAng());ctx.globalAlpha=1}
-  else if(w.target&&desk&&mouse.in&&!curTeam().ai&&!(w.id==='homing'&&G.target)){const p=toWorld(mouse.x,mouse.y);
+  else if(w.target&&desk&&mouse.in&&human()&&!(w.id==='homing'&&G.target)){const p=toWorld(mouse.x,mouse.y);
    ctx.strokeStyle='rgba(255,59,48,.75)';ctx.lineWidth=1.6;ctx.setLineDash([4,3]);ctx.beginPath();ctx.arc(p.x,p.y,9,0,TAU);ctx.moveTo(p.x-14,p.y);ctx.lineTo(p.x+14,p.y);ctx.moveTo(p.x,p.y-14);ctx.lineTo(p.x,p.y+14);ctx.stroke();ctx.setLineDash([])}}
  if(G.target){const t=G.target,r=7+Math.sin(G.tick*.2)*2;ctx.strokeStyle='#ff3b30';ctx.lineWidth=2;ctx.beginPath();ctx.arc(t.x,t.y,r,0,TAU);ctx.moveTo(t.x-r-5,t.y);ctx.lineTo(t.x+r+5,t.y);ctx.moveTo(t.x,t.y-r-5);ctx.lineTo(t.x,t.y+r+5);ctx.stroke()}
  if(G.swing>0&&a){ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=3;ctx.beginPath();ctx.arc(a.x,a.y,20,a.dir>0?-1.2:Math.PI-.6,a.dir>0?.6:Math.PI+1.2);ctx.stroke()}
@@ -1253,30 +1310,40 @@ function hud(){if(!inGame&&!G.winner)return;
  G.teams.forEach((t,i)=>{const hp=t.blobs.reduce((s,b)=>s+(b.alive?b.hp:0),0),mx=t.blobs.length*G.hp0,x=12,y=10+i*17;
   ctx.fillStyle='rgba(12,24,52,.7)';rr(x,y,104,13,6);ctx.fill();ctx.fillStyle=t.color;rr(x+2,y+2,Math.max(0,Math.min(100,100*hp/mx)),9,4);ctx.fill();
   ctx.textAlign='left';ctx.font='700 9px system-ui,sans-serif';ctx.fillStyle='#fff';ctx.fillText(t.name+'  '+hp,x+110,y+10)});
- if(G.banner){ctx.globalAlpha=Math.min(1,G.banner.n/25);ctx.textAlign='center';label(G.banner.t,cx,88,'#fff','800 15px system-ui,sans-serif');ctx.globalAlpha=1}}
+ if(G.banner){ctx.globalAlpha=Math.min(1,G.banner.n/25);ctx.textAlign='center';label(G.banner.t,cx,88,'#fff','800 15px system-ui,sans-serif');ctx.globalAlpha=1}
+ // online status, under the menu/camera buttons: latency, and why the game is standing still if it is
+ if(NET.on&&inGame){const x=vw-12,F='800 11px system-ui,sans-serif';let y=60;ctx.textAlign='right';
+  label('🌐 '+NET.rtt+'ms',x,y,'#fff','700 10px system-ui,sans-serif');
+  if(NET.wait)label('ממתין שהחבר יטען את הזירה…',x,y+=15,'#ffd640',F);
+  else if(!mine()&&performance.now()-NET.lastAdv>700)label('ממתין לחבר…',x,y+=15,'#ffd640',F);
+  if(NET.desync)label('⚠ המשחק יצא מסנכרון — כדאי להתחיל משחק חדש',x,y+=15,'#ff6b5e',F)}}
 
 /* ---------- UI ---------- */
-function uiSync(){if(!G||G.state==='over')return;const t=curTeam(),w=curW(),am=t.ammo[w.id];
- $('ui').classList.toggle('ai',t.ai);$('kWep').firstChild.nodeValue=w.icon;$('kWep').lastChild.textContent=am===Infinity?'∞':am;
+// .ai dims the pads: it's the computer's turn, or online the friend's
+function uiSync(){if(!G||G.state==='over')return;const t=curTeam(),w=curW(),am=t.ammo[w.id],their=NET.on&&G.turn!==NET.me;
+ $('ui').classList.toggle('ai',t.ai||their);$('kWep').firstChild.nodeValue=w.icon;$('kWep').lastChild.textContent=am===Infinity?'∞':am;
  $('kFuse').style.visibility=w.fuse||w.len?'visible':'hidden';$('kFuse').firstChild.textContent=w.len?'📏 '+G.dig:'⏱ '+G.fuse;
- $('wname').textContent=t.ai?'המחשב חושב…':w.name+' — '+w.desc}
+ $('wname').textContent=t.ai?'המחשב חושב…':their?'התור של החבר — '+w.icon+' '+w.name:w.name+' — '+w.desc}
 let clickBlock=0;document.addEventListener('click',e=>{if(performance.now()<clickBlock){e.stopPropagation();e.preventDefault()}},true);
 function openWeapons(){if(G.state!=='aim'||curTeam().ai||G.lock)return;clickBlock=performance.now()+350;const t=curTeam(),g=$('wgrid');g.innerHTML='';
  WEAPONS.forEach((w,i)=>{const b=document.createElement('button');b.className='w'+(i===t.wi?' sel':'');const am=t.ammo[w.id];b.disabled=!(am>0);
-  b.innerHTML='<b>'+w.icon+'</b>'+w.name+'<em>'+(am===Infinity?'∞':'×'+am)+'</em>';b.onpointerenter=()=>{$('wdesc').textContent=w.name+': '+w.desc};b.onclick=()=>{t.wi=i;G.target=null;G.shots=2;$('wpanel').classList.add('hide');uiSync()};g.appendChild(b)});
+  b.innerHTML='<b>'+w.icon+'</b>'+w.name+'<em>'+(am===Infinity?'∞':'×'+am)+'</em>';b.onpointerenter=()=>{$('wdesc').textContent=w.name+': '+w.desc};b.onclick=()=>{act('wi',i);$('wpanel').classList.add('hide')};g.appendChild(b)});
  $('wpanel').classList.remove('hide')}
 $('wpanel').addEventListener('click',e=>{if(e.target===$('wpanel'))$('wpanel').classList.add('hide')});
 function hold(id,key,down,up){const el=$(id);
  const d=e=>{e.preventDefault();audioInit();try{el.setPointerCapture(e.pointerId)}catch(x){}el.classList.add('on');if(key)inp[key]=true;if(down)down()};
  const u=e=>{if(!el.classList.contains('on'))return;el.classList.remove('on');if(key)inp[key]=false;if(up)up()};
  el.addEventListener('pointerdown',d);el.addEventListener('pointerup',u);el.addEventListener('pointercancel',u);el.addEventListener('lostpointercapture',u);el.addEventListener('contextmenu',e=>e.preventDefault())}
-const human=()=>inGame&&G&&!paused&&G.state!=='over'&&!curTeam().ai;
+// may this PC steer right now? Online: only on your own turn (the friend's inputs arrive over the network)
+const human=()=>inGame&&G&&!paused&&G.state!=='over'&&!curTeam().ai&&(!NET.on||G.turn===NET.me);
 hold('kLeft','left');hold('kRight','right');hold('kUp','up');hold('kDown','down');
 hold('kJump','jump',()=>{inp.jumpP=true});hold('kFlip',null,()=>{inp.flipP=true});
-hold('kFire',null,()=>{if(human())fireDown()},()=>{if(human())fireUp()});
+hold('kFire',null,()=>{if(human())act('fd')},()=>{if(human())act('fu')});
 hold('kWep',null,null,()=>{if(human())openWeapons()});
-hold('kFuse',null,()=>{if(human()){if(curW().len)G.dig=G.dig%5+1;else G.fuse=G.fuse%5+1;uiSync()}});
-function pauseGame(){clickBlock=performance.now()+350;paused=true;$('msg').classList.add('hide');$('bResume').classList.toggle('hide',!inGame);$('bQuit').classList.toggle('hide',!inGame);$('menu').classList.remove('hide')}
+hold('kFuse',null,()=>{if(human())act('fz',(curW().len?G.dig:G.fuse)%5+1,0)});
+function pauseGame(){clickBlock=performance.now()+350;paused=true;
+ // online the match keeps running under the menu, so let go of any key that was held when it opened
+ if(NET.on){for(const k in KM)inp[KM[k]]=false;inp.jump=inp.jumpP=inp.flipP=false;netUI()}$('msg').classList.add('hide');$('bResume').classList.toggle('hide',!inGame);$('bQuit').classList.toggle('hide',!inGame);$('menu').classList.remove('hide')}
 hold('kMenu',null,null,pauseGame);
 hold('kCam',null,()=>{if(G&&G.active){userPanT=0;G.focus=60}});
 // arena buttons come from MAPS, so a new arena only needs its entry there
@@ -1285,11 +1352,14 @@ $('mapSeg').innerHTML='<button data-v="0" title="אקראי">🎲</button>'+MAPS
 function segSync(){document.querySelectorAll('.seg').forEach(g=>[...g.children].forEach(b=>b.classList.toggle('sel',+b.dataset.v===S[g.dataset.k])));
  const m=MAPS[S.map-1];$('mapinfo').textContent=m?m.icon+' '+m.name+' — '+m.desc:'🎲 אקראי — בכל משחק זירה אחרת'}
 // changing the arena or world on the start screen repaints the backdrop behind the menu as a preview
-document.querySelectorAll('.seg').forEach(g=>g.addEventListener('click',e=>{const v=e.target.dataset.v;if(v==null)return;S[g.dataset.k]=+v;saveS();segSync();if((g.dataset.k==='map'||g.dataset.k==='theme')&&!inGame)backdrop()}));
+document.querySelectorAll('.seg').forEach(g=>g.addEventListener('click',e=>{const v=e.target.dataset.v;if(v==null)return;
+ if(document.body.classList.contains('netlock')&&g.dataset.k!=='snd')return;// the host sets the rules; mid-match nobody changes them
+ S[g.dataset.k]=+v;saveS();segSync();if((g.dataset.k==='map'||g.dataset.k==='theme')&&!inGame)backdrop();
+ if(NET.role==='host'&&NET.ready&&!NET.on)netSend({t:'rules',r:rulesOf()})}));// the guest's menu mirrors the host's choices
 const DN=['קל','בינוני','קשה'];
 function recSync(){$('rec').textContent='ניצחונות נגד המחשב — '+DN.map((n,i)=>n+': '+(S.wins[i]||0)).join(' · ')}
 function start(ai){audioInit();newGame(ai,S.n,false);G.vsAI=ai;inGame=true;paused=false;$('menu').classList.add('hide');$('ui').classList.remove('hide');uiSync();blurUI()}
-$('bQuit').onclick=()=>{inGame=false;paused=false;G.state='over';G.active=null;G.winner=null;$('ui').classList.add('hide');$('bResume').classList.add('hide');$('bQuit').classList.add('hide');$('msg').classList.add('hide')};
+$('bQuit').onclick=()=>{if(NET.on){netSend({t:'quit',id:NET.mid});netMatchEnd('יצאת מהמשחק');return}inGame=false;paused=false;G.state='over';G.active=null;G.winner=null;$('ui').classList.add('hide');$('bResume').classList.add('hide');$('bQuit').classList.add('hide');$('msg').classList.add('hide')};
 segSync();recSync();
 $('b1p').onclick=()=>start(true);$('b2p').onclick=()=>start(false);
 $('bResume').onclick=()=>resumeGame();
@@ -1308,10 +1378,13 @@ const mouse={x:0,y:0,in:false,btn:-1,fire:false,sx:0,sy:0};
 let aimSrc='keys',focusT=0;addEventListener('focus',()=>{focusT=performance.now()});
 // weapons where the cursor should not swing the aim (the girder uses ▲▼ for its rotation)
 const NOAIM={girder:1,jackhammer:1,skip:1,shield:1,heal:1,hourglass:1,quake:1};
-function mouseAim(){if(!human()||G.state!=='aim'||!mouse.in)return;const b=G.active,w=curW();
- if(!b||!b.alive||b.drill||w.target&&w.id!=='homing'||NOAIM[w.id])return;
- const p=toWorld(mouse.x,mouse.y),dx=p.x-b.x,dy=p.y-b.y;if(Math.hypot(dx,dy)<12)return;
- b.dir=dx<0?-1:1;G.aim=clamp(Math.atan2(-dy,Math.abs(dx)),-1.45,1.5)}
+// where the cursor says the blob should aim: [dir, angle] — or null when the mouse shouldn't steer now
+function mouseAimV(){if(!human()||G.state!=='aim'||!mouse.in)return null;const b=G.active,w=curW();
+ if(!b||!b.alive||b.drill||w.target&&w.id!=='homing'||NOAIM[w.id])return null;
+ const p=toWorld(mouse.x,mouse.y),dx=p.x-b.x,dy=p.y-b.y;if(Math.hypot(dx,dy)<12)return null;
+ return[dx<0?-1:1,clamp(Math.atan2(-dy,Math.abs(dx)),-1.45,1.5)]}
+function mouseAim(){const v=mouseAimV();if(!v)return;
+ if(NET.on){if(v[0]!==G.active.dir||v[1]!==G.aim)act('m',v[0],v[1])}else{G.active.dir=v[0];G.aim=v[1]}}
 const blurUI=()=>{const a=document.activeElement;if(a&&a!==document.body&&a.blur)a.blur()};// a focused button would swallow Space/Enter
 function mouseDown(e){mouse.x=e.clientX;mouse.y=e.clientY;mouse.in=true;
  if(mouse.btn!==-1)return;// chorded buttons: the first one owns the gesture
@@ -1321,15 +1394,15 @@ function mouseDown(e){mouse.x=e.clientX;mouse.y=e.clientY;mouse.in=true;
  if(performance.now()-focusT<250)return;// the click that brings the window to front is not a shot
  const w=curW(),picking=w.target&&!(w.id==='homing'&&G.target&&!e.shiftKey);
  // homing: the first click marks the target, the next press launches; Shift+click moves the target
- if(!picking){aimSrc='mouse';mouseAim();mouse.fire=true;fireDown()}}
+ if(!picking){aimSrc='mouse';mouseAim();mouse.fire=true;act('fd')}}
 function mouseMove(e){const dx=e.clientX-mouse.x,dy=e.clientY-mouse.y;mouse.x=e.clientX;mouse.y=e.clientY;mouse.in=true;
  if(mouse.btn===-1||mouse.fire){aimSrc='mouse';return}// hovering or charging: the cursor aims
  if(!moved&&Math.hypot(e.clientX-mouse.sx,e.clientY-mouse.sy)>6)moved=true;
  if(moved){G.focus=0;cam.x-=dx/cam.z;cam.y-=dy/cam.z;userPanT=performance.now()+2500;clampCam();cv.style.cursor='grabbing'}}
 function mouseUp(e,cancel){const btn=mouse.btn;if(btn===-1)return;mouse.btn=-1;cv.style.cursor='';
- if(mouse.fire){mouse.fire=false;if(human())fireUp();return}
+ if(mouse.fire){mouse.fire=false;if(human())act('fu');return}
  if(cancel||moved||!human())return;
- if(btn===0&&performance.now()-downT<600){const p=toWorld(e.clientX,e.clientY);useTarget(p.x,p.y)}
+ if(btn===0&&performance.now()-downT<600){const p=toWorld(e.clientX,e.clientY);act('tg',p.x,p.y)}
  else if(btn===2)toggleWeapons()}
 function toggleWeapons(){if($('wpanel').classList.contains('hide')){openWeapons();if(desk){const s=$('wgrid').querySelector('.w.sel')||$('wgrid').querySelector('.w:not(:disabled)');if(s)s.focus({preventScroll:true})}}else{$('wpanel').classList.add('hide');blurUI()}}
 // right-click on the open box closes it — but on Windows the contextmenu of the very right-click that
@@ -1348,7 +1421,7 @@ cv.addEventListener('pointerdown',e=>{audioInit();if(e.pointerType==='mouse'){se
 cv.addEventListener('pointermove',e=>{if(e.pointerType==='mouse'){mouseMove(e);return}const p=ptrs.get(e.pointerId);if(!p)return;const dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;
  if(ptrs.size===1){if(moved||Math.hypot(p.x-p.sx,p.y-p.sy)>9){moved=true;G.focus=0;cam.x-=dx/cam.z;cam.y-=dy/cam.z;userPanT=performance.now()+2500;clampCam()}}
  else if(ptrs.size===2){G.focus=0;const[a,b]=[...ptrs.values()];cam.z=clamp(z0*Math.hypot(a.x-b.x,a.y-b.y)/pinch0,minZoom(),3);userPanT=performance.now()+2500;clampCam()}});
-const pup=e=>{if(e.pointerType==='mouse'){mouseUp(e,e.type==='pointercancel');return}const p=ptrs.get(e.pointerId);if(!p)return;if(e.type==='pointerup'&&ptrs.size===1&&!moved&&performance.now()-downT<450&&human())useTarget(cam.x+(p.x-vw/2)/cam.z,cam.y+(p.y-vh/2)/cam.z);ptrs.delete(e.pointerId)};
+const pup=e=>{if(e.pointerType==='mouse'){mouseUp(e,e.type==='pointercancel');return}const p=ptrs.get(e.pointerId);if(!p)return;if(e.type==='pointerup'&&ptrs.size===1&&!moved&&performance.now()-downT<450&&human())act('tg',cam.x+(p.x-vw/2)/cam.z,cam.y+(p.y-vh/2)/cam.z);ptrs.delete(e.pointerId)};
 cv.addEventListener('pointerup',pup);cv.addEventListener('pointercancel',pup);
 cv.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&mouse.btn===-1)mouse.in=false});
 // zoom around the cursor: keep the world point under the pointer fixed while the scale changes
@@ -1357,7 +1430,7 @@ cv.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.deltaY<0?1.1:1/1.1,e
 /* keyboard — matched on e.code (physical key), so it plays the same on Hebrew and English layouts */
 const KM={ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'up',KeyW:'up',ArrowDown:'down',KeyS:'down'};
 const GAMEKEYS=new Set(['Space','Enter','NumpadEnter','Backspace','Tab']);
-function cycleWeapon(d){if(!human()||G.state!=='aim'||G.lock)return;const t=curTeam(),n=WEAPONS.length;let i=t.wi;
+function cycleWeapon(d){if(G.state!=='aim'||G.lock)return;const t=curTeam(),n=WEAPONS.length;let i=t.wi;
  for(let k=0;k<n;k++){i=(i+d+n)%n;if(t.ammo[WEAPONS[i].id]>0)break}
  if(i===t.wi)return;t.wi=i;G.target=null;G.shots=2;snd('tick');uiSync()}
 function resumeGame(){paused=false;$('menu').classList.add('hide');$('bQuit').classList.add('hide');blurUI()}
@@ -1372,12 +1445,11 @@ addEventListener('keydown',e=>{const c=e.code;audioInit();
  if(KM[c]){inp[KM[c]]=true;aimSrc='keys'}
  else if(c==='Space'){inp.jumpP=true;inp.jump=true}// held Space also thrusts the jetpack (control() reads inp.jump)
  else if(c==='Backspace')inp.flipP=true;
- else if(c==='Enter'||c==='NumpadEnter'){if(human())fireDown()}
+ else if(c==='Enter'||c==='NumpadEnter'){if(human())act('fd')}
  else if(c==='Tab'){if(human())toggleWeapons()}
- else if(c==='KeyQ')cycleWeapon(-1);
- else if(c==='KeyE')cycleWeapon(1);
- else if(/^(Digit|Numpad)[1-5]$/.test(c)){if(!human())return;const v=+c.slice(-1),len=!!curW().len;if(len)G.dig=v;else G.fuse=v;
-  if(b)G.texts.push({x:b.x,y:b.y-52,t:(len?'📏 ':'⏱ ')+v,c:'#ffd640',n:50});uiSync()}
+ else if(c==='KeyQ'){if(human())act('cw',-1)}
+ else if(c==='KeyE'){if(human())act('cw',1)}
+ else if(/^(Digit|Numpad)[1-5]$/.test(c)){if(!human())return;act('fz',+c.slice(-1),1)}
  else if(c==='KeyC'||c==='Home'){if(G.active){userPanT=0;G.focus=60}}
  else if(c==='KeyP')pauseGame();
  else if(c==='Equal'||c==='NumpadAdd')zoomAt(1.15,vw/2,vh/2);
@@ -1387,24 +1459,220 @@ addEventListener('keydown',e=>{const c=e.code;audioInit();
 addEventListener('keyup',e=>{const c=e.code;
  if(KM[c])inp[KM[c]]=false;
  else if(c==='Space')inp.jump=false;
- else if(c==='Enter'||c==='NumpadEnter'){if(human())fireUp()}
+ else if(c==='Enter'||c==='NumpadEnter'){if(human())act('fu')}
  else return;
  if(inGame&&!paused&&$('wpanel').classList.contains('hide'))e.preventDefault()});
 // alt-tab with a key held must not leave the blob walking forever, or a shot charging in the background
-addEventListener('blur',()=>{for(const k in KM)inp[KM[k]]=false;inp.jump=inp.jumpP=inp.flipP=false;mouse.btn=-1;mouse.fire=false;cv.style.cursor='';if(G&&G.charging){G.charging=false;G.power=0}});
+addEventListener('blur',()=>{for(const k in KM)inp[KM[k]]=false;inp.jump=inp.jumpP=inp.flipP=false;mouse.btn=-1;mouse.fire=false;cv.style.cursor='';if(G&&G.charging)act('cc')});
 let rotOff=false;function rotCheck(){$('rot').classList.toggle('hide',rotOff||!(innerHeight>innerWidth&&innerWidth<600))}
 $('bRot').onclick=()=>{rotOff=true;rotCheck()};
 addEventListener('resize',()=>{resize();rotCheck()});document.addEventListener('contextmenu',e=>e.preventDefault());
-document.addEventListener('visibilitychange',()=>{if(document.hidden&&inGame&&!paused)pauseGame()});
+// a minimised offline game pauses itself; an online one can't (the friend is still playing)
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&inGame&&!paused&&!NET.on)pauseGame()});
+/* ---------- online play ----------
+   Two PCs play one match with deterministic lockstep: both run the very same simulation and only inputs
+   travel. Whoever's turn it is PRODUCES the input for every tick — keys held, mouse aim, and the
+   fire/target/weapon commands from act() — runs it, and streams it. The other PC REPLAYS those ticks in
+   order and never runs ahead of what has arrived. The hand-over is clean because both PCs reach
+   nextTurn() on exactly the same tick, so each tick has exactly one producer.
+   What keeps the two simulations identical:
+   · the seeded RNG (rand), whose seed travels in the start message;
+   · the host's solid mask (see genTerrain);
+   · inputs applied only through runCmd(), at tick boundaries, on both PCs; numbers normalised so a JSON
+     round trip can't change them.
+   Every second both hash the state; a mismatch is reported instead of silently playing on.
+   Transport: PeerJS over a WebRTC data channel. Its free public server only introduces the two PCs
+   (room code = peer id); STUN, with PeerJS's TURN relays as a fallback, gets through home routers.
+   Messages: hi · rules · start + mask chunks · ready · f (frames) · p/q (ping) · quit · ds · bye */
+const PROTO=1,ROOM='blobwars-v1-',ABC='ABCDEFGHJKMNPQRSTUVWXYZ23456789',TICK=1000/60;// no 0/O, 1/I/L in codes
+// a fingerprint of this build's code: two PCs only play together when their simulations are identical
+const BUILD=(()=>{const s=document.currentScript?document.currentScript.textContent:'';let h=0x811c9dc5;for(let i=0;i<s.length;i++)h=Math.imul(h^s.charCodeAt(i),16777619);return(h>>>0).toString(36)})();
+const RULES=['map','theme','n','hp','tt','sd','aim'],rulesOf=()=>{const r={};for(const k of RULES)r[k]=S[k];return r};
+// rules from the network are checked before they touch S: a bad value would crash newGame()
+function cleanRules(r){const o={},R={map:[0,MAPS.length,0],theme:[0,THEMES.length-1,0],n:[3,8,4],hp:[50,300,100],tt:[10,120,45],sd:[0,1,1],aim:[0,1,0]};
+ for(const k of RULES){const v=r&&r[k],[a,b,d]=R[k];o[k]=Number.isInteger(v)&&v>=a&&v<=b?v:d}return o}
+const mine=()=>NET.on&&G&&G.turn===NET.me;
+
+/* Commands: every input that changes the match goes through act(). Offline it runs at once, exactly as
+   before. Online only the player whose turn it is may act; the command is queued, rides in the frame of
+   the next tick, and runs on both PCs right before that tick. */
+function act(...c){if(!NET.on)runCmd(c);else if(mine()&&!NET.wait)NET.q.push(c)}
+function runCmd(c){for(let i=1;i<c.length;i++)c[i]=Number.isFinite(c[i])?c[i]+0:0;// -0 and NaN don't survive JSON
+ const b=G.active;switch(c[0]){
+ case'fd':fireDown();break;
+ case'fu':fireUp();break;
+ case'tg':useTarget(c[1],c[2]);break;
+ case'wi':{const t=curTeam(),w=WEAPONS[c[1]];if(w&&t.ammo[w.id]>0&&!G.lock){t.wi=c[1];G.target=null;G.shots=2;uiSync()}break}
+ case'cw':cycleWeapon(c[1]);break;
+ case'fz':{const v=clamp(c[1]|0,1,5),len=!!curW().len;if(len)G.dig=v;else G.fuse=v;// fuse seconds / dig length
+  if(c[2]&&b)G.texts.push({x:b.x,y:b.y-52,t:(len?'📏 ':'⏱ ')+v,c:'#ffd640',n:50});uiSync();break}
+ case'm':if(G.state==='aim'&&b&&b.alive&&!b.drill){b.dir=c[1]<0?-1:1;G.aim=c[2]}break;// mouse aim
+ case'k':{const v=c[1];NI.left=!!(v&1);NI.right=!!(v&2);NI.up=!!(v&4);NI.down=!!(v&8);NI.jump=!!(v&16);
+  if(c[2]&1)NI.jumpP=true;if(c[2]&2)NI.flipP=true;break}// presses latch until control() uses them, like inp
+ case'cc':if(G.charging){G.charging=false;G.power=0}break}}// window lost focus mid-charge
+const keyBits=o=>(o.left?1:0)|(o.right?2:0)|(o.up?4:0)|(o.down?8:0)|(o.jump?16:0);
+// the producer's input for the next tick: changed keys, the cursor's aim, then queued commands
+function netSample(){const f=[],lv=keyBits(inp),eg=(inp.jumpP?1:0)|(inp.flipP?2:0);inp.jumpP=inp.flipP=false;
+ if(lv!==keyBits(NI)||eg)f.push(['k',lv,eg]);
+ if(aimSrc==='mouse'){const v=mouseAimV();if(v&&(v[0]!==G.active.dir||v[1]!==G.aim))f.push(['m',v[0],v[1]])}
+ if(NET.q.length){f.push(...NET.q);NET.q.length=0}
+ return f}
+// Advance the online match as far as real time (my turn) or the arrived input (their turn) allows.
+// Called from every animation frame, and from a timer when animation frames stop (hidden window).
+function netRun(){if(!NET.on||!inGame||!G)return;
+ // NET.speed is a test knob only (soak tests run matches several times faster than real time)
+ const now=performance.now();NET.acc=Math.min(NET.acc+(NET.tRun?now-NET.tRun:0)*(NET.speed||1),document.hidden?5000:250);NET.tRun=now;
+ if(NET.wait){NET.acc=0;return}// host: the guest is still loading the arena
+ let n=0;
+ while(G.state!=='over'&&n<120){
+  if(G.turn===NET.me){// my turn: I produce every tick
+   if(NET.acc<TICK)break;NET.acc-=TICK;
+   const t=G.tick+1,f=netSample();if(f.length)NET.out.push([t,...f]);for(const c of f)runCmd(c);step();n++;NET.prod=t;NET.lastAdv=now;
+   if(t%60===0)NET.outH.push([t,stateHash()]);
+   if(NET.out.length>=100)netFlush();// a long catch-up burst still fits in one data-channel message
+   if(G.turn!==NET.me)NET.q.length=0;// my turn just ended: anything still queued belongs to no tick
+  }else{// their turn: replay what has arrived, never guess ahead
+   const avail=NET.upTo-G.tick;if(avail<=0){NET.acc=Math.min(NET.acc,TICK);break}
+   const late=avail>6;// a backlog (network hiccup, window was hidden): catch up faster than real time
+   if(NET.acc<TICK&&!late)break;NET.acc=Math.max(0,NET.acc-TICK);NET.ff=avail>30;// and quietly, if far behind
+   const t=G.tick+1,f=NET.inq.get(t);if(f){NET.inq.delete(t);for(const c of f)runCmd(c)}step();n++;NET.lastAdv=now;
+   if(t%60===0){const th=NET.theirH.get(t);if(th!==undefined){NET.theirH.delete(t);if(th!==stateHash())netDesync(t)}}}}
+ NET.ff=false;netFlush()}
+// send the ticks produced since the last flush: "everything up to u is final", plus the non-empty ones
+function netFlush(){if(NET.prod>NET.sent){netSend({t:'f',id:NET.mid,u:NET.prod,e:NET.out,h:NET.outH});NET.sent=NET.prod;NET.out=[];NET.outH=[]}}
+// a cheap fingerprint of the state that matters (exact float bits, the RNG, a sample of the terrain)
+function stateHash(){let h=0x811c9dc5;const f=new Float64Array(1),u=new Uint32Array(f.buffer);
+ const n=v=>{f[0]=v;h=Math.imul(h^u[0],16777619);h=Math.imul(h^u[1],16777619)};
+ n(G.tick);n(G.turn);n(['aim','retreat','wait','over'].indexOf(G.state));n(G.timer);n(G.wind);n(G.waterY);n(rs);n(G.aim);n(G.power);
+ for(const b of allBlobs()){n(b.x);n(b.y);n(b.vx);n(b.vy);n(b.hp);n(b.alive?1:0)}
+ for(const p of G.projs){n(p.x);n(p.y)}n(G.projs.length);n(G.fires.length);n(G.barrels.length);n(G.crates.length);n(G.parts.length);
+ for(let i=0;i<solid.length;i+=97)h=Math.imul(h^solid[i],16777619);
+ return h>>>0}
+function netDesync(t){if(NET.desync)return;NET.desync=t||1;console.warn('[net] desync detected at tick',t);netSend({t:'ds',at:t})}
+// the solid mask travels deflated and base64'd (2.4 MB raw → a few dozen KB)
+async function packMask(){const z=new Uint8Array(await new Response(new Blob([solid]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
+ let s='';for(let i=0;i<z.length;i+=0x8000)s+=String.fromCharCode.apply(null,z.subarray(i,i+0x8000));return btoa(s)}
+async function unpackMask(b){const s=atob(b),z=new Uint8Array(s.length);for(let i=0;i<s.length;i++)z[i]=s.charCodeAt(i);
+ return new Uint8Array(await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer())}
+// both PCs: set up the identical match (same rules, same seed; the guest also takes the host's mask)
+function netBegin(seed,r,mask){Object.assign(S,r);audioInit();
+ seedRng(seed);NET.mask=mask;newGame(false,r.n,false);NET.mask=null;
+ G.vsAI=false;G.teams[NET.me].name+=' (אתה)';// display only — names never steer the simulation
+ Object.assign(NET,{on:true,q:[],out:[],outH:[],upTo:0,prod:0,sent:0,acc:0,tRun:0,ff:false,desync:0,lastAdv:performance.now(),wait:NET.role==='host'});
+ NET.inq.clear();NET.theirH.clear();for(const k in NI)NI[k]=false;
+ inGame=true;paused=false;['wpanel','menu','msg','bResume','bQuit'].forEach(id=>$(id).classList.add('hide'));$('ui').classList.remove('hide');
+ document.body.classList.add('netlock');uiSync();blurUI()}
+// host: start (or restart) a match — rematches swap colours, so the first move alternates
+async function netStart(){if(NET.role!=='host'||!NET.ready||NET.on)return;
+ const seed=Math.random()*4294967296>>>0,r=rulesOf(),id=++NET.round,ht=(id+1)%2;NET.mid=id;NET.me=ht;
+ netBegin(seed,r,null);
+ const m=await packMask(),N=12000,n=Math.ceil(m.length/N);// PeerJS refuses JSON messages of 16 300 bytes or more
+ netSend({t:'start',id,seed,r,ht,n});for(let i=0;i<n;i++)netSend({t:'mask',id,i,d:m.slice(i*N,(i+1)*N)})}
+async function guestLoad(p){NET.pend=null;let mask=null;try{mask=await unpackMask(p.parts.join(''))}catch(e){}
+ if(!NET.conn)return;if(!mask||mask.length!==W*H){netReset('נתוני הזירה הגיעו פגומים — נסו שוב',1);return}
+ NET.mid=p.id;NET.me=1-p.ht;netBegin(p.seed,p.r,mask);netSend({t:'ready',id:p.id,h:stateHash()})}
+// the match is over for this PC (someone quit, or the line dropped): back to the menu
+function netMatchEnd(msg){const was=NET.on;NET.on=false;NET.wait=false;
+ if(was&&inGame){inGame=false;paused=false;if(G){G.state='over';G.active=null;G.winner=null}}
+ ['ui','wpanel','bResume','bQuit'].forEach(id=>$(id).classList.add('hide'));
+ if(NET.role!=='guest')document.body.classList.remove('netlock');
+ if(msg){$('msg').textContent=msg;$('msg').classList.remove('hide')}$('menu').classList.remove('hide');netUI()}
+function netMsg(m){NET.lastRx=performance.now();switch(m.t){
+ case'f':if(!NET.on||m.id!==NET.mid)break;for(const e of m.e)NET.inq.set(e[0],e.slice(1));for(const[t,h]of m.h)NET.theirH.set(t,h);
+  if(m.u>NET.upTo)NET.upTo=m.u;if(document.hidden)netRun();break;// hidden windows get no animation frames
+ case'p':netSend({t:'q',s:m.s});break;
+ case'q':NET.rtt=Math.max(0,Math.round(performance.now()-m.s));break;
+ case'hi':if(m.v!==PROTO||m.b!==BUILD){netSend({t:'bye',why:'ver'});netReset(VER_MSG,1);return}
+  if(NET.ready)break;NET.ready=true;clearTimeout(NET.jt);
+  if(NET.role==='guest'){NET.ownS=JSON.parse(JSON.stringify(S));document.body.classList.add('netlock')}else netSend({t:'rules',r:rulesOf()});
+  netUI();break;
+ case'rules':if(NET.role==='guest'&&!NET.on){const r=cleanRules(m.r),mt=r.map!==S.map||r.theme!==S.theme;Object.assign(S,r);segSync();if(mt&&!inGame)backdrop()}break;
+ case'start':if(NET.role==='guest'&&m.n>0&&m.n<200)NET.pend={id:m.id,seed:m.seed>>>0,r:cleanRules(m.r),ht:m.ht?1:0,n:m.n,parts:[],got:0};NET.st='טוען את הזירה…';netUI();break;
+ case'mask':{const p=NET.pend;if(p&&m.id===p.id&&m.i>=0&&m.i<p.n&&p.parts[m.i]==null){p.parts[m.i]=m.d;if(++p.got===p.n)guestLoad(p)}break}
+ case'ready':if(NET.role==='host'&&NET.on&&NET.wait&&m.id===NET.mid){NET.wait=false;NET.tRun=performance.now();NET.acc=0;if(m.h!==stateHash())netDesync(0)}break;
+ case'ds':if(NET.on&&!NET.desync)NET.desync=m.at||1;break;
+ case'quit':if(NET.on&&m.id===NET.mid)netMatchEnd('החבר יצא מהמשחק');break;
+ case'bye':netReset(m.why==='full'?'החדר כבר מלא — יש בו כבר שני שחקנים':m.why==='ver'?VER_MSG:'החבר התנתק',1);break}}
+const VER_MSG='לחבר יש גרסה אחרת של המשחק — שניכם צריכים את אותה גרסה';
+function netSend(m){const c=NET.conn;if(c&&c.open)try{c.send(m)}catch(e){console.warn('[net] send failed',e)}}
+// end the session: close the connection, give the guest their own settings back
+function netReset(msg,isErr){clearInterval(NET.tmo);clearTimeout(NET.jt);const c=NET.conn,p=NET.peer;
+ NET.conn=null;NET.peer=null;NET.role=null;NET.ready=false;NET.pend=null;
+ try{c&&c.close()}catch(e){}try{p&&p.destroy()}catch(e){}
+ if(NET.on)netMatchEnd(msg);
+ if(NET.ownS){const snd=S.snd;Object.assign(S,NET.ownS);S.snd=snd;NET.ownS=null;segSync();if(!inGame)backdrop()}
+ document.body.classList.remove('netlock','netc');NET.err=isErr?msg:'';netUI()}
+function netAttach(c){NET.conn=c;NET.lastRx=performance.now();
+ c.on('open',()=>{if(NET.conn===c){NET.lastRx=performance.now();netSend({t:'hi',v:PROTO,b:BUILD})}});
+ c.on('data',m=>{if(NET.conn===c&&m&&typeof m==='object')netMsg(m)});
+ c.on('close',()=>{if(NET.conn===c)netReset('החיבור לחבר נותק',1)});
+ c.on('error',e=>{if(NET.conn===c)console.warn('[net] connection error',e)});
+ clearInterval(NET.tmo);NET.tmo=setInterval(()=>{if(NET.conn!==c)return;const now=performance.now();
+  if(NET.ready){netSend({t:'p',s:now});if(now-NET.lastRx>15000){netReset('החיבור לחבר נותק',1);return}}if(!inGame||paused)netUI()},1000)}
+function netErr(e){const t=e&&e.type;return t==='peer-unavailable'?'לא נמצא חדר עם הקוד הזה — בדקו את הקוד':
+ t==='network'||t==='server-error'||t==='socket-error'||t==='socket-closed'?'אין חיבור לשרת המשחק — בדקו את האינטרנט':'שגיאת חיבור ('+(t||'?')+')'}
+const noLib=()=>{if(typeof Peer==='function')return false;NET.err='רכיב הרשת לא נטען — התקינו מחדש את המשחק';netUI();return true};
+function netHost(){if(noLib())return;netReset();NET.open=true;NET.role='host';document.body.classList.add('netc');
+ NET.code=Array.from({length:5},()=>ABC[Math.random()*ABC.length|0]).join('');NET.st='מתחבר לשרת…';netUI();
+ const p=NET.peer=new Peer(ROOM+NET.code,{debug:0});
+ p.on('open',()=>{if(NET.peer===p&&!NET.ready){NET.st='שלחו לחבר את הקוד — ממתין שיצטרף…';netUI()}});
+ p.on('connection',c=>{if(NET.peer!==p)return;
+  if(NET.conn){c.on('open',()=>{c.send({t:'bye',why:'full'});setTimeout(()=>c.close(),800)});return}netAttach(c)});
+ p.on('disconnected',()=>{if(NET.peer===p&&!NET.ready)try{p.reconnect()}catch(e){}});// keep the room code alive while waiting
+ p.on('error',e=>{if(NET.peer!==p||NET.ready)return;if(e.type==='unavailable-id'){netHost();return}netReset(netErr(e),1)})}
+function netJoin(code){if(noLib())return;code=(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+ if(code.length!==5){NET.err='קוד חדר הוא 5 תווים — אותיות באנגלית ומספרים';netUI();return}
+ netReset();NET.open=true;NET.role='guest';NET.code=code;document.body.classList.add('netc');NET.st='מתחבר לחדר '+code+'…';netUI();
+ const p=NET.peer=new Peer({debug:0});
+ p.on('open',()=>{if(NET.peer===p)netAttach(p.connect(ROOM+code,{reliable:true,serialization:'json'}))});
+ p.on('error',e=>{if(NET.peer!==p||NET.ready)return;netReset(netErr(e),1)});
+ NET.jt=setTimeout(()=>{if(NET.peer===p&&!NET.ready)netReset('לא הצלחנו להתחבר לחבר — בדקו את האינטרנט ונסו שוב (ייתכן שחומת אש חוסמת)',1)},20000)}
+// the online box in the menu: create/join → waiting for the friend → connected (start / waiting for host)
+function netUI(){const role=NET.role;
+ $('bNet').classList.toggle('hide',NET.open||!!role);$('netbox').classList.toggle('hide',!NET.open&&!role&&!NET.err);
+ $('netA').classList.toggle('hide',!!role);$('netB').classList.toggle('hide',!role);
+ let s=NET.err;
+ if(role){$('netCodeBox').classList.toggle('hide',role!=='host'||NET.ready);$('netCodeV').textContent=NET.code;
+  if(!NET.ready)s=NET.st;
+  else if(NET.on)s='🟢 משחק ברשת ('+NET.rtt+'ms) — המשחק ממשיך גם כשהתפריט פתוח';
+  else if(role==='host')s='🟢 החבר מחובר ('+NET.rtt+'ms). בחרו הגדרות ולחצו התחל.';
+  else s=NET.pend?NET.st:'🟢 מחובר למארח ('+NET.rtt+'ms). ההגדרות נקבעות אצלו — ממתין שיתחיל…';
+  $('bNetGo').classList.toggle('hide',!(role==='host'&&NET.ready&&!NET.on));$('bNetGo').textContent=NET.round?'🔁 משחק חוזר':'▶ התחל משחק ברשת';
+  $('bNetOff').textContent=NET.ready?'התנתק':'ביטול'}
+ $('netSt').textContent=s;$('netSt').classList.toggle('err',!role&&!!NET.err)}
+$('bNet').onclick=()=>{NET.open=true;NET.err='';netUI()};
+$('bNetX').onclick=()=>{NET.open=false;NET.err='';netUI()};
+$('bHost').onclick=netHost;
+$('bJoin').onclick=()=>netJoin($('netCode').value);
+$('bNetGo').onclick=()=>netStart();
+$('bNetOff').onclick=()=>netReset();
+$('bCopy').onclick=()=>{const done=()=>{$('bCopy').textContent='הועתק ✓';setTimeout(()=>$('bCopy').textContent='העתק',1500)};
+ try{navigator.clipboard.writeText(NET.code).then(done,()=>{})}catch(e){}};
+// room codes are Latin: type them from a Hebrew layout too, by physical key
+$('netCode').addEventListener('keydown',e=>{const el=e.target,k=/^(?:Key([A-Z])|Digit([0-9])|Numpad([0-9]))$/.exec(e.code);
+ if(e.code==='Enter'||e.code==='NumpadEnter'){e.preventDefault();netJoin(el.value);return}
+ if(!k||e.ctrlKey||e.metaKey||e.altKey)return;e.preventDefault();const ch=k[1]||k[2]||k[3],a=el.selectionStart,b=el.selectionEnd;
+ if(el.value.length-(b-a)<5){el.value=el.value.slice(0,a)+ch+el.value.slice(b);el.setSelectionRange(a+1,a+1)}});
+$('netCode').addEventListener('input',e=>{e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,5)});
+// keeps an online match moving while the window is hidden and gets no animation frames
+setInterval(()=>{if(NET.on&&inGame&&performance.now()-NET.lastRaf>120)netRun()},50);
+addEventListener('beforeunload',()=>{try{NET.peer&&NET.peer.destroy()}catch(e){}});
+// test hook: link this page to another one without WebRTC (a harness relays the JSON messages)
+function netFake(role,send){netReset();NET.open=true;NET.role=role;NET.code='TEST0';document.body.classList.add('netc');
+ netAttach({open:true,send,close(){},on(){}});netSend({t:'hi',v:PROTO,b:BUILD})}
+
 /* loop */
 let last=0,acc=0;
-function frame(t){requestAnimationFrame(frame);const dt=Math.min(100,t-last);last=t;if(!paused&&G&&G.state!=='over'){acc+=dt;let k=0;while(acc>=16.667&&k++<5){step();acc-=16.667}if(k>=5)acc=0}else if(G&&G.state==='over'&&!paused){for(const p of G.parts){p.x+=p.vx;p.y+=p.vy;p.n--}G.parts=G.parts.filter(p=>p.n>0);G.booms.length=0;G.tick++}
+function frame(t){requestAnimationFrame(frame);const dt=Math.min(100,t-last);last=t;NET.lastRaf=performance.now();
+ if(NET.on){if(inGame)netRun()}// an online match keeps going under the menu: only the producer's clock and the network pace it
+ else if(!paused&&G&&G.state!=='over'){acc+=dt;let k=0;while(acc>=16.667&&k++<5){step();acc-=16.667}if(k>=5)acc=0}else if(G&&G.state==='over'&&!paused){for(const p of G.parts){p.x+=p.vx;p.y+=p.vy;p.n--}G.parts=G.parts.filter(p=>p.n>0);G.booms.length=0;G.tick++}
  render()}
 resize();rotCheck();
 /* backdrop behind the menu */
 function backdrop(){newGame(true,4,true);G.state='over';G.active=null;G.banner=null;cam.z=clamp(vh/520,minZoom(),1);cam.x=W/2;cam.y=520;clampCam()}
 backdrop();
-window.__setDiff=v=>{S.diff=v};window.__voice=voice;window.__choir=choir;window.__OUCH=OUCH;window.__cry=cry;window.__CRIES=CRIES;window.__cryText=cryText;window.__solid=solid;window.__pause=()=>pauseGame();window.__dbg={get G(){return G},step,newGame,WEAPONS,fireDown,fireUp,useTarget,inp,cam,S,MAPS,explode,house,bunker,pipe,container,tree,temple,edge};
+window.__setDiff=v=>{S.diff=v};window.__voice=voice;window.__choir=choir;window.__OUCH=OUCH;window.__cry=cry;window.__CRIES=CRIES;window.__cryText=cryText;window.__solid=solid;window.__pause=()=>pauseGame();window.__dbg={get G(){return G},step,newGame,WEAPONS,fireDown,fireUp,useTarget,inp,cam,S,MAPS,explode,house,bunker,pipe,container,tree,temple,edge,
+ get NET(){return NET},NI,netFake,netMsg,netStart,netReset,stateHash,act,runCmd,seedRng,rand,mine,BUILD};
 requestAnimationFrame(frame);
 </script>
 

@@ -2,8 +2,10 @@
 /**
  * Desktop shell for "מלחמת הבלובים" (Blob Wars).
  *
- * The game itself is one self-contained HTML file (app/index.html) with no network access and no
- * Node usage, so the window is locked down: sandboxed, no node integration, no navigation, no popups.
+ * The game itself is one self-contained HTML file (app/index.html) with no Node usage, so the window
+ * is locked down: sandboxed, no node integration, no navigation, no popups. Its only network use is
+ * online play: PeerJS (app/vendor) asks the public PeerJS server to introduce two players, then the
+ * match runs over a direct WebRTC data channel — none of that needs anything from the main process.
  * localStorage (settings + win record) persists automatically in the app's userData folder.
  */
 const { app, BrowserWindow, Menu } = require('electron');
