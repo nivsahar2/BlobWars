@@ -1,0 +1,4 @@
+# Keep LF in the repo and the working tree (the sources are LF; autocrlf would churn every line)
+* text=auto eol=lf
+*.ico binary
+*.png binary

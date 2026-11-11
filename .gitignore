@@ -1,0 +1,8 @@
+# dependencies and build output — rebuilt with `npm install` / `npm run package`
+node_modules/
+dist/
+release/
+# local tooling / scratch
+.claude/
+*.log
+__pycache__/
